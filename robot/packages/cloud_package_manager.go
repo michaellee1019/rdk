@@ -24,6 +24,7 @@ import (
 	"go.viam.com/rdk/config"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/resource"
+	robotstatus "go.viam.com/rdk/robot/status"
 	rutils "go.viam.com/rdk/utils"
 )
 
@@ -49,7 +50,8 @@ type cloudManager struct {
 	managedPackages map[PackageName]*config.PackageConfig
 	mu              sync.RWMutex
 
-	logger logging.Logger
+	logger         logging.Logger
+	statusReporter robotstatus.StatusReporter
 }
 
 // SubtypeName is a constant that identifies the internal package manager resource subtype string.
@@ -86,6 +88,7 @@ func NewCloudManager(
 		packagesDir:     packagesDir,
 		packagesDataDir: packagesDataDir,
 		logger:          logger,
+		statusReporter:  robotstatus.NewNoOpStatusReporter(),
 	}, nil
 }
 
@@ -109,6 +112,13 @@ func (m *cloudManager) Close(ctx context.Context) error {
 
 	m.httpClient.CloseIdleConnections()
 	return nil
+}
+
+// SetStatusReporter sets the status reporter for this package manager.
+func (m *cloudManager) SetStatusReporter(reporter robotstatus.StatusReporter) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.statusReporter = reporter
 }
 
 // SyncAll syncs all given packages and removes any not in the list from the local file system.
@@ -156,6 +166,15 @@ func (m *cloudManager) Sync(ctx context.Context, packages []config.PackageConfig
 
 		m.logger.Debugf("Starting package sync [%d/%d] %s:%s", idx+1, len(changedPackages), p.Package, p.Version)
 
+		// Find the module associated with this package and report status
+		moduleName := m.findModuleForPackage(p, modules)
+		if moduleName != "" {
+			m.statusReporter.ReportPackageStatus(moduleName, robotstatus.PackageLifecycleStatus{
+				State:       robotstatus.PackageStateDownloading,
+				LastUpdated: time.Now(),
+			})
+		}
+
 		// Lookup the packages http url
 		includeURL := true
 
@@ -173,6 +192,15 @@ func (m *cloudManager) Sync(ctx context.Context, packages []config.PackageConfig
 		if err != nil {
 			m.logger.Errorf("Failed fetching package details for package %s:%s. Err: %v", p.Package, p.Version, err)
 			outErr = multierr.Append(outErr, fmt.Errorf("failed loading package url for %s:%s %w", p.Package, p.Version, err))
+
+			// Report failure status
+			if moduleName != "" {
+				m.statusReporter.ReportPackageStatus(moduleName, robotstatus.PackageLifecycleStatus{
+					State:       robotstatus.PackageStateFailed,
+					LastUpdated: time.Now(),
+					Error:       err,
+				})
+			}
 			continue
 		}
 
@@ -201,6 +229,15 @@ func (m *cloudManager) Sync(ctx context.Context, packages []config.PackageConfig
 			m.logger.Errorf("Failed downloading package %s:%s from %s, %s", p.Package, p.Version, sanitizeURLForLogs(resp.Package.Url), err)
 			outErr = multierr.Append(outErr, fmt.Errorf("failed downloading package %s:%s from %s %w",
 				p.Package, p.Version, sanitizeURLForLogs(resp.Package.Url), err))
+
+			// Report failure status
+			if moduleName != "" {
+				m.statusReporter.ReportPackageStatus(moduleName, robotstatus.PackageLifecycleStatus{
+					State:       robotstatus.PackageStateFailed,
+					LastUpdated: time.Now(),
+					Error:       err,
+				})
+			}
 			continue
 		}
 
@@ -213,6 +250,14 @@ func (m *cloudManager) Sync(ctx context.Context, packages []config.PackageConfig
 
 		// add to managed packages
 		newManagedPackages[PackageName(p.Name)] = &p
+
+		// Report success status
+		if moduleName != "" {
+			m.statusReporter.ReportPackageStatus(moduleName, robotstatus.PackageLifecycleStatus{
+				State:       robotstatus.PackageStateReady,
+				LastUpdated: time.Now(),
+			})
+		}
 
 		m.logger.Debugf("Package sync complete [%d/%d] %s:%s after %v", idx+1, len(changedPackages), p.Package, p.Version, time.Since(pkgStart))
 	}
@@ -470,6 +515,18 @@ func trimLeadingZeroes(data []byte) []byte {
 
 	// If all bytes are zero, return a single zero byte
 	return []byte{0x00}
+}
+
+// findModuleForPackage finds the module name associated with a package.
+// For registry modules, the package name typically matches the module name.
+func (m *cloudManager) findModuleForPackage(pkg config.PackageConfig, modules []config.Module) string {
+	// For registry modules, find the module that matches this package
+	for _, mod := range modules {
+		if mod.Type == config.ModuleTypeRegistry && mod.Name == pkg.Name {
+			return mod.Name
+		}
+	}
+	return ""
 }
 
 func getGoogleHash(headers http.Header, hashType string) string {

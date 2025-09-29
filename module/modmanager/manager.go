@@ -26,6 +26,7 @@ import (
 	modmanageroptions "go.viam.com/rdk/module/modmanager/options"
 	"go.viam.com/rdk/resource"
 	"go.viam.com/rdk/robot/packages"
+	robotstatus "go.viam.com/rdk/robot/status"
 	rutils "go.viam.com/rdk/utils"
 )
 
@@ -149,6 +150,9 @@ type Manager struct {
 	// modPeerConnTracker must be updated as modules create/destroy any underlying WebRTC
 	// PeerConnections.
 	modPeerConnTracker *rdkgrpc.ModPeerConnTracker
+
+	// statusManager manages module resources in the resource graph for status tracking
+	statusManager *ModuleStatusManager
 }
 
 // Close terminates module connections and processes.
@@ -347,8 +351,24 @@ func (mgr *Manager) startModule(ctx context.Context, mod *module) error {
 	defer func() {
 		if !success {
 			mod.cleanupAfterStartupFailure()
+			// Update status to failed if startup fails
+			if mgr.statusManager != nil {
+				mgr.statusManager.UpdateModuleStatus(mod.cfg.Name, robotstatus.ModuleLifecycleStatus{
+					State:       robotstatus.ModuleStateFailed,
+					LastUpdated: time.Now(),
+					Error:       errors.New("module startup failed"),
+				})
+			}
 		}
 	}()
+
+	// Update status to starting
+	if mgr.statusManager != nil {
+		mgr.statusManager.UpdateModuleStatus(mod.cfg.Name, robotstatus.ModuleLifecycleStatus{
+			State:       robotstatus.ModuleStateStarting,
+			LastUpdated: time.Now(),
+		})
+	}
 
 	// create the module's data directory
 	if mod.dataDir != "" {
@@ -386,6 +406,15 @@ func (mgr *Manager) startModule(ctx context.Context, mod *module) error {
 	mod.registerResourceModels(mgr)
 	mgr.modules.Store(mod.cfg.Name, mod)
 	mod.logger.Infow("Module successfully added", "module", mod.cfg.Name)
+
+	// Update status to running
+	if mgr.statusManager != nil {
+		mgr.statusManager.UpdateModuleStatus(mod.cfg.Name, robotstatus.ModuleLifecycleStatus{
+			State:       robotstatus.ModuleStateRunning,
+			LastUpdated: time.Now(),
+		})
+	}
+
 	success = true
 	return nil
 }
@@ -414,6 +443,14 @@ func (mgr *Manager) Reconfigure(ctx context.Context, conf config.Module) ([]reso
 	}
 
 	mod.logger.CInfow(ctx, "Module configuration changed. Stopping the existing module process", "module", conf.Name)
+
+	// Update status to stopping during reconfiguration
+	if mgr.statusManager != nil {
+		mgr.statusManager.UpdateModuleStatus(conf.Name, robotstatus.ModuleLifecycleStatus{
+			State:       robotstatus.ModuleStateStopping,
+			LastUpdated: time.Now(),
+		})
+	}
 
 	if err := mgr.closeModule(mod, true); err != nil {
 		// If removal fails, assume all handled resources are orphaned.
@@ -518,6 +555,19 @@ func (mgr *Manager) closeModule(mod *module, reconfigure bool) error {
 		}
 	}
 	mgr.modules.Delete(mod.cfg.Name)
+
+	// Update status to stopped and remove from status manager
+	if mgr.statusManager != nil {
+		mgr.statusManager.UpdateModuleStatus(mod.cfg.Name, robotstatus.ModuleLifecycleStatus{
+			State:       robotstatus.ModuleStateStopping,
+			LastUpdated: time.Now(),
+		})
+		// Remove the module resource from tracking after a brief delay to allow status to be observed
+		go func() {
+			time.Sleep(1 * time.Second)
+			mgr.statusManager.RemoveModuleResource(mod.cfg.Name)
+		}()
+	}
 
 	mod.logger.Infow("Module successfully closed", "module", mod.cfg.Name)
 	return nil
@@ -823,6 +873,15 @@ func (mgr *Manager) newOnUnexpectedExitHandler(ctx context.Context, mod *module)
 			"Module has unexpectedly exited.", "module", mod.cfg.Name, "exit_code", exitCode,
 		)
 
+		// Update status to failed
+		if mgr.statusManager != nil {
+			mgr.statusManager.UpdateModuleStatus(mod.cfg.Name, robotstatus.ModuleLifecycleStatus{
+				State:       robotstatus.ModuleStateFailed,
+				LastUpdated: time.Now(),
+				Error:       errors.Errorf("module exited unexpectedly with code %d", exitCode),
+			})
+		}
+
 		// There are two relevant calls that may race with a crashing module:
 		// 1. mgr.Remove, which wants to stop the module and remove it entirely
 		// 2. mgr.Reconfigure, which wants to stop the module and replace it with
@@ -935,6 +994,14 @@ func (mgr *Manager) newOnUnexpectedExitHandler(ctx context.Context, mod *module)
 		mod.logger.Infow("Module resources successfully re-added after module restart",
 			"module", mod.cfg.Name,
 			"resources", restoredResourceNamesStr)
+
+		// Update status to running after successful restart
+		if mgr.statusManager != nil {
+			mgr.statusManager.UpdateModuleStatus(mod.cfg.Name, robotstatus.ModuleLifecycleStatus{
+				State:       robotstatus.ModuleStateRunning,
+				LastUpdated: time.Now(),
+			})
+		}
 		return
 	}
 }
@@ -1010,8 +1077,22 @@ func (mgr *Manager) attemptRestart(ctx context.Context, mod *module) error {
 	return nil
 }
 
+// SetStatusManager sets the status manager for tracking module lifecycle status.
+func (mgr *Manager) SetStatusManager(statusManager *ModuleStatusManager) {
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	mgr.statusManager = statusManager
+}
+
 // FirstRun is runs a module-specific setup script.
 func (mgr *Manager) FirstRun(ctx context.Context, conf config.Module) error {
+	// Update status to first run
+	if mgr.statusManager != nil {
+		mgr.statusManager.UpdateModuleStatus(conf.Name, robotstatus.ModuleLifecycleStatus{
+			State:       robotstatus.ModuleStateFirstRun,
+			LastUpdated: time.Now(),
+		})
+	}
 	pkgsDir := packages.LocalPackagesDir(mgr.packagesDir)
 
 	// This value is normally set on a field on the [module] struct but it seems like we can safely get it on demand.

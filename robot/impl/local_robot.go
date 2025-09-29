@@ -30,6 +30,7 @@ import (
 	"go.viam.com/rdk/ftdc/sys"
 	icloud "go.viam.com/rdk/internal/cloud"
 	"go.viam.com/rdk/logging"
+	"go.viam.com/rdk/module/modmanager"
 	"go.viam.com/rdk/operation"
 	"go.viam.com/rdk/pointcloud"
 	"go.viam.com/rdk/referenceframe"
@@ -39,6 +40,7 @@ import (
 	"go.viam.com/rdk/robot/framesystem"
 	"go.viam.com/rdk/robot/jobmanager"
 	"go.viam.com/rdk/robot/packages"
+	robotstatus "go.viam.com/rdk/robot/status"
 	"go.viam.com/rdk/robot/web"
 	weboptions "go.viam.com/rdk/robot/web/options"
 	"go.viam.com/rdk/session"
@@ -94,6 +96,9 @@ type localRobot struct {
 	localModuleVersions map[string]semver.Version
 	startFtdcOnce       sync.Once
 	ftdc                *ftdc.FTDC
+
+	// moduleStatusManager manages module resources for status tracking
+	moduleStatusManager *modmanager.ModuleStatusManager
 
 	// whether the robot is actively reconfiguring
 	reconfiguring atomic.Bool
@@ -542,6 +547,22 @@ func newWithResources(
 		r.webSvc.ModPeerConnTracker(),
 	); err != nil {
 		return nil, err
+	}
+
+	// Initialize module status manager for tracking module lifecycle status
+	r.moduleStatusManager = modmanager.NewModuleStatusManager(r.manager.resources, logger.Sublogger("module_status"))
+	r.manager.moduleManager.SetStatusManager(r.moduleStatusManager)
+
+	// Set up package managers to report status
+	if cloudManager, ok := r.packageManager.(interface {
+		SetStatusReporter(robotstatus.StatusReporter)
+	}); ok {
+		cloudManager.SetStatusReporter(r.moduleStatusManager)
+	}
+	if localManager, ok := r.localPackages.(interface {
+		SetStatusReporter(robotstatus.StatusReporter)
+	}); ok {
+		localManager.SetStatusReporter(r.moduleStatusManager)
 	}
 
 	if !rOpts.disableCompleteConfigWorker {
@@ -1360,6 +1381,12 @@ func (r *localRobot) reconfigure(ctx context.Context, newConfig *config.Config, 
 
 	var allErrs error
 
+	// Create module resources for status tracking before package sync
+	if err := r.createModuleResources(ctx, newConfig.Modules); err != nil {
+		r.Logger().CErrorw(ctx, "failed to create module resources for status tracking", "error", err)
+		return
+	}
+
 	// Sync Packages before reconfiguring rest of robot and resolving references to any packages
 	// in the config.
 	// TODO(RSDK-1849): Make this non-blocking so other resources that do not require packages can run before package sync finishes.
@@ -1791,6 +1818,21 @@ func (r *localRobot) checkMaintenanceSensorReadings(ctx context.Context,
 		return false, errors.Errorf("maintenance_allowed_key %s is not a bool value", maintenanceAllowedKey)
 	}
 	return canReconfigure, nil
+}
+
+// createModuleResources creates module resources in the resource graph for status tracking.
+func (r *localRobot) createModuleResources(ctx context.Context, modules []config.Module) error {
+	if r.moduleStatusManager == nil {
+		return nil // Status manager not initialized yet, skip
+	}
+
+	for _, mod := range modules {
+		if err := r.moduleStatusManager.CreateModuleResource(ctx, mod); err != nil {
+			r.logger.CErrorw(ctx, "Failed to create module resource", "module", mod.Name, "error", err)
+			// Continue with other modules even if one fails
+		}
+	}
+	return nil
 }
 
 // RestartAllowed returns whether the robot can safely be restarted. The robot

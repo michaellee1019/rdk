@@ -62,6 +62,7 @@ type moduleManager interface {
 	Remove(modName string) ([]resource.Name, error)
 	RemoveResource(ctx context.Context, name resource.Name) error
 	ResolveImplicitDependenciesInConfig(ctx context.Context, conf *config.Diff) error
+	SetStatusManager(statusManager *modmanager.ModuleStatusManager)
 	ValidateConfig(ctx context.Context, conf resource.Config) ([]string, []string, error)
 }
 
