@@ -767,6 +767,11 @@ func (manager *resourceManager) completeConfig(
 					if !(resName.API.IsComponent() || resName.API.IsService()) {
 						return
 					}
+					// Skip module resources - they're managed by the module status manager
+					if resName.API == modmanager.ModuleAPI {
+						manager.logger.CDebugw(ctx, "Skipping module resource reconfiguration, managed by status manager", "resource", resName)
+						return
+					}
 
 					var prefix string
 					conf := gNode.Config()

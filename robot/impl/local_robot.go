@@ -1705,6 +1705,15 @@ func (r *localRobot) MachineStatus(ctx context.Context) (robot.MachineStatus, er
 	// that this robot does not have CloudMetadata to attach to resources.
 	md, _ := r.CloudMetadata(ctx) //nolint:errcheck
 	for _, resourceStatus := range r.manager.resources.Status() {
+		// For module resources, get the status from the ModuleResource itself, not the GraphNode
+		if resourceStatus.Name.API == modmanager.ModuleAPI && r.moduleStatusManager != nil {
+			if moduleRes, exists := r.moduleStatusManager.GetModuleResource(resourceStatus.Name.Name); exists {
+				detailedStatus := moduleRes.DetailedStatus()
+				result.Resources = append(result.Resources, resource.Status{NodeStatus: detailedStatus.NodeStatus, CloudMetadata: md})
+				continue
+			}
+		}
+		
 		// if the resource is local, we can use the status as is and attach the cloud metadata of this robot.
 		if !resourceStatus.Name.ContainsRemoteNames() && resourceStatus.Name.API != client.RemoteAPI {
 			result.Resources = append(result.Resources, resource.Status{NodeStatus: resourceStatus, CloudMetadata: md})

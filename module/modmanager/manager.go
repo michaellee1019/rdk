@@ -347,27 +347,23 @@ func (mgr *Manager) startModuleProcess(mod *module, oue pexec.UnexpectedExitHand
 }
 
 func (mgr *Manager) startModule(ctx context.Context, mod *module) error {
-	var success bool
-	defer func() {
-		if !success {
-			mod.cleanupAfterStartupFailure()
-			// Update status to failed if startup fails
-			if mgr.statusManager != nil {
-				mgr.statusManager.UpdateModuleStatus(mod.cfg.Name, robotstatus.ModuleLifecycleStatus{
-					State:       robotstatus.ModuleStateFailed,
-					LastUpdated: time.Now(),
-					Error:       errors.New("module startup failed"),
-				})
-			}
-		}
-	}()
+    var success bool
+    defer func() {
+        if !success {
+            mod.cleanupAfterStartupFailure()
+        }
+    }()
 
 	// Update status to starting
 	if mgr.statusManager != nil {
-		mgr.statusManager.UpdateModuleStatus(mod.cfg.Name, robotstatus.ModuleLifecycleStatus{
+		if statusErr := mgr.statusManager.UpdateModuleStatus(mod.cfg.Name, robotstatus.ModuleLifecycleStatus{
 			State:       robotstatus.ModuleStateStarting,
 			LastUpdated: time.Now(),
-		})
+		}); statusErr != nil {
+			mod.logger.Warnw("failed to update module status to STARTING", "module", mod.cfg.Name, "error", statusErr)
+		}
+	} else {
+		mod.logger.Warnw("status manager is nil, cannot update module status", "module", mod.cfg.Name)
 	}
 
 	// create the module's data directory
@@ -385,17 +381,46 @@ func (mgr *Manager) startModule(ctx context.Context, mod *module) error {
 	var moduleRestartCtx context.Context
 	moduleRestartCtx, mod.restartCancel = context.WithCancel(mgr.restartCtx)
 	if err := mgr.startModuleProcess(mod, mgr.newOnUnexpectedExitHandler(moduleRestartCtx, mod)); err != nil {
+		if mgr.statusManager != nil {
+			if statusErr := mgr.statusManager.UpdateModuleStatus(mod.cfg.Name, robotstatus.ModuleLifecycleStatus{
+				State:       robotstatus.ModuleStateFailed,
+				LastUpdated: time.Now(),
+				Error:       errors.WithMessage(err, "module startup failed"),
+			}); statusErr != nil {
+				mod.logger.Warnw("failed to update module status during startup failure", "module", mod.cfg.Name, "error", statusErr)
+			}
+		} else {
+			mod.logger.Warnw("status manager is nil during startup failure, cannot update status", "module", mod.cfg.Name)
+		}
 		return errors.WithMessage(err, "error while starting module "+mod.cfg.Name)
 	}
 
 	// Does a gRPC dial. Sets up a SharedConn with a PeerConnection that is not yet connected.
 	if err := mod.dial(); err != nil {
+		if mgr.statusManager != nil {
+			if statusErr := mgr.statusManager.UpdateModuleStatus(mod.cfg.Name, robotstatus.ModuleLifecycleStatus{
+				State:       robotstatus.ModuleStateFailed,
+				LastUpdated: time.Now(),
+				Error:       errors.WithMessage(err, "module dial failed"),
+			}); statusErr != nil {
+				mod.logger.Debugw("failed to update module status during dial failure", "error", statusErr)
+			}
+		}
 		return errors.WithMessage(err, "error while dialing module "+mod.cfg.Name)
 	}
 
 	// Sends a ReadyRequest and waits on a ReadyResponse. The PeerConnection will async connect
 	// after this, so long as the module supports it.
 	if err := mod.checkReady(ctx, mgr.parentAddr(mod)); err != nil {
+		if mgr.statusManager != nil {
+			if statusErr := mgr.statusManager.UpdateModuleStatus(mod.cfg.Name, robotstatus.ModuleLifecycleStatus{
+				State:       robotstatus.ModuleStateFailed,
+				LastUpdated: time.Now(),
+				Error:       errors.WithMessage(err, "module ready check failed"),
+			}); statusErr != nil {
+				mod.logger.Debugw("failed to update module status during ready check failure", "error", statusErr)
+			}
+		}
 		return errors.WithMessage(err, "error while waiting for module to be ready "+mod.cfg.Name)
 	}
 

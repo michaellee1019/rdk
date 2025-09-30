@@ -1,14 +1,14 @@
 package modmanager
 
 import (
-	"context"
-	"fmt"
-	"sync"
+    "context"
+    "fmt"
+    "sync"
 
-	"go.viam.com/rdk/config"
-	"go.viam.com/rdk/logging"
-	"go.viam.com/rdk/resource"
-	robotstatus "go.viam.com/rdk/robot/status"
+    "go.viam.com/rdk/config"
+    "go.viam.com/rdk/logging"
+    "go.viam.com/rdk/resource"
+    robotstatus "go.viam.com/rdk/robot/status"
 )
 
 // ModuleStatusManager manages module resources in the resource graph for status tracking.
@@ -27,6 +27,7 @@ var _ robotstatus.StatusReporter = (*ModuleStatusManager)(nil)
 type ResourceGraphInterface interface {
 	AddNode(name resource.Name, node *resource.GraphNode) error
 	Node(name resource.Name) (*resource.GraphNode, bool)
+    RemoveMarked() []resource.Resource
 }
 
 // NewModuleStatusManager creates a new module status manager.
@@ -151,6 +152,20 @@ func (msm *ModuleStatusManager) RemoveModuleResource(moduleName string) {
 
 	delete(msm.modules, moduleName)
 	msm.logger.Debugw("Removed module resource from tracking", "module", moduleName)
+
+    // Proactively remove marked nodes from the graph and close returned resources.
+    // This prevents nodes from remaining in REMOVING indefinitely until another
+    // reconfigure cycle triggers cleanup.
+    toClose := msm.resourceGraph.RemoveMarked()
+    if len(toClose) > 0 {
+        go func(resources []resource.Resource) {
+            ctx := context.Background()
+            for _, res := range resources {
+                // Best-effort close; errors are logged by the resource graph callers elsewhere.
+                _ = res.Close(ctx)
+            }
+        }(toClose)
+    }
 }
 
 // ReportPackageStatus implements the StatusReporter interface for package managers.
@@ -162,10 +177,24 @@ func (msm *ModuleStatusManager) ReportPackageStatus(moduleName string, packageSt
 func (msm *ModuleStatusManager) updateResourceInGraph(moduleName string, moduleResource *ModuleResource) error {
 	resourceName := resource.NewName(ModuleAPI, moduleName)
 
-	// Get the existing node and swap the resource to trigger status update
+	// Get the existing node and swap the resource to trigger status update.
+	// We always swap the resource to ensure the graph node reflects the latest module state.
+	// The ModuleResource itself maintains the correct NodeStatus including state transitions.
 	if node, exists := msm.resourceGraph.Node(resourceName); exists {
-		// Use SwapResource to update the resource in the existing node
-		node.SwapResource(moduleResource, resource.DefaultModelFamily.WithModel("builtin"), nil)
+		desired := moduleResource.nodeStatus()
+		
+		// For unhealthy state, also set the error on the node
+		if desired.State == resource.NodeStateUnhealthy && desired.Error != nil {
+			node.LogAndSetLastError(desired.Error, "module", moduleName)
+		} else if desired.State == resource.NodeStateRemoving {
+			// For removing state, mark for removal instead of swapping
+			node.MarkForRemoval()
+		} else {
+			// For all other states (Ready, Configuring, etc), swap the resource.
+			// SwapResource will set the node to Ready, but the Status() method on
+			// the ModuleResource will return the correct lifecycle state.
+			node.SwapResource(moduleResource, resource.DefaultModelFamily.WithModel("builtin"), nil)
+		}
 	}
 
 	return nil
