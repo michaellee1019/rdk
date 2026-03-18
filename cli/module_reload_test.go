@@ -327,7 +327,8 @@ func TestMutateModuleConfig(t *testing.T) {
 			"reload_path":    manifest.Entrypoint,
 			"reload_enabled": true,
 		}}
-		_, dirty, err := mutateModuleConfig(c, modules, manifest, true)
+		localOpts := configureModuleOpts{local: true, reloadTime: "2024-03-18T12:00:00Z", reloadUser: "test@viam.com"}
+		_, dirty, err := mutateModuleConfig(c, modules, manifest, localOpts)
 		test.That(t, err, test.ShouldBeNil)
 		test.That(t, dirty, test.ShouldBeFalse)
 	})
@@ -340,7 +341,8 @@ func TestMutateModuleConfig(t *testing.T) {
 			"reload_path":    manifest.Entrypoint,
 			"reload_enabled": false,
 		}}
-		_, dirty, err := mutateModuleConfig(c, modules, manifest, true)
+		localOpts := configureModuleOpts{local: true, reloadTime: "2024-03-18T12:00:00Z", reloadUser: "test@viam.com"}
+		_, dirty, err := mutateModuleConfig(c, modules, manifest, localOpts)
 		test.That(t, err, test.ShouldBeNil)
 		test.That(t, dirty, test.ShouldBeTrue)
 		test.That(t, modules[0]["reload_enabled"], test.ShouldBeTrue)
@@ -354,7 +356,8 @@ func TestMutateModuleConfig(t *testing.T) {
 			"reload_path":    "incorrect/path",
 			"reload_enabled": false,
 		}}
-		_, dirty, err := mutateModuleConfig(c, modules, manifest, true)
+		localOpts := configureModuleOpts{local: true, reloadTime: "2024-03-18T12:00:00Z", reloadUser: "test@viam.com"}
+		_, dirty, err := mutateModuleConfig(c, modules, manifest, localOpts)
 		test.That(t, err, test.ShouldBeNil)
 		test.That(t, dirty, test.ShouldBeTrue)
 		test.That(t, modules[0]["reload_path"], test.ShouldEqual, manifest.Entrypoint)
@@ -367,7 +370,8 @@ func TestMutateModuleConfig(t *testing.T) {
 			"type":      string(rdkConfig.ModuleTypeRegistry),
 			"module_id": manifest.ModuleID,
 		}}
-		_, dirty, err := mutateModuleConfig(c, modules, manifest, true)
+		localOpts := configureModuleOpts{local: true, reloadTime: "2024-03-18T12:00:00Z", reloadUser: "test@viam.com"}
+		_, dirty, err := mutateModuleConfig(c, modules, manifest, localOpts)
 		test.That(t, err, test.ShouldBeNil)
 		test.That(t, dirty, test.ShouldBeTrue)
 		test.That(t, modules[0]["reload_path"], test.ShouldEqual, manifest.Entrypoint)
@@ -376,7 +380,8 @@ func TestMutateModuleConfig(t *testing.T) {
 
 	t.Run("insert_when_missing", func(t *testing.T) {
 		modules := []ModuleMap{}
-		modules, _, _ = mutateModuleConfig(c, modules, manifest, true)
+		localOpts := configureModuleOpts{local: true, reloadTime: "2024-03-18T12:00:00Z", reloadUser: "test@viam.com"}
+		modules, _, _ = mutateModuleConfig(c, modules, manifest, localOpts)
 		test.That(t, modules[0]["module_id"], test.ShouldEqual, manifest.ModuleID)
 		test.That(t, modules[0]["name"], test.ShouldEqual, expectedName)
 		test.That(t, modules[0]["reload_path"], test.ShouldEqual, manifest.Entrypoint)
@@ -390,7 +395,8 @@ func TestMutateModuleConfig(t *testing.T) {
 			"type":      string(rdkConfig.ModuleTypeLocal),
 			"module_id": manifest.ModuleID,
 		}}
-		updatedModules, _, _ := mutateModuleConfig(c, modules, manifest, true)
+		localOpts := configureModuleOpts{local: true, reloadTime: "2024-03-18T12:00:00Z", reloadUser: "test@viam.com"}
+		updatedModules, _, _ := mutateModuleConfig(c, modules, manifest, localOpts)
 		test.That(t, len(updatedModules), test.ShouldEqual, 2)
 		test.That(t, updatedModules[1]["reload_path"], test.ShouldEqual, manifest.Entrypoint)
 		test.That(t, updatedModules[1]["reload_enabled"], test.ShouldBeTrue)
@@ -399,7 +405,8 @@ func TestMutateModuleConfig(t *testing.T) {
 
 	c = newTestContext(t, map[string]any{})
 	t.Run("remote_insert", func(t *testing.T) {
-		modules, _, _ := mutateModuleConfig(c, []ModuleMap{}, manifest, false)
+		remoteOpts := configureModuleOpts{local: false, reloadTime: "2024-03-18T12:00:00Z", reloadUser: "test@viam.com"}
+		modules, _, _ := mutateModuleConfig(c, []ModuleMap{}, manifest, remoteOpts)
 		test.That(t, modules[0]["module_id"], test.ShouldEqual, manifest.ModuleID)
 		test.That(t, modules[0]["name"], test.ShouldEqual, expectedName)
 		test.That(t, modules[0]["reload_path"], test.ShouldEqual, remoteReloadPath)

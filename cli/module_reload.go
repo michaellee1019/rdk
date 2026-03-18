@@ -170,10 +170,18 @@ func writeBackConfig(part *apppb.RobotPart, configAsMap map[string]any) error {
 	return nil
 }
 
-// configureModule is the configuration step of module reloading. Returns (updated robotPartpart, needsRestart, error).
+// configureModuleOpts holds options for configuring a module during reload.
+type configureModuleOpts struct {
+	local       bool
+	cloudReload bool
+	reloadTime  string // RFC3339 formatted timestamp
+	reloadUser  string // email of the user performing the reload
+}
+
+// configureModule is the configuration step of module reloading. Returns (updated robotPart, needsRestart, error).
 // Mutates the passed part.RobotConfig.
 func configureModule(
-	c *cli.Context, vc *viamClient, manifest *ModuleManifest, part *apppb.RobotPart, local bool,
+	c *cli.Context, vc *viamClient, manifest *ModuleManifest, part *apppb.RobotPart, opts configureModuleOpts,
 ) (*apppb.RobotPart, bool, error) {
 	if manifest == nil {
 		return part, false, fmt.Errorf("reconfiguration requires valid manifest json passed to --%s", moduleFlagPath)
@@ -190,7 +198,7 @@ func configureModule(
 		return part, false, err
 	}
 
-	modules, dirty, err := mutateModuleConfig(c, modules, *manifest, local)
+	modules, dirty, err := mutateModuleConfig(c, modules, *manifest, opts)
 	if err != nil {
 		return part, false, err
 	}
@@ -239,7 +247,7 @@ func mutateModuleConfig(
 	c *cli.Context,
 	modules []ModuleMap,
 	manifest ModuleManifest,
-	local bool,
+	opts configureModuleOpts,
 ) ([]ModuleMap, bool, error) {
 	var dirty bool
 	var foundMod ModuleMap
@@ -250,22 +258,42 @@ func mutateModuleConfig(
 		}
 	}
 
+	args, err := getGlobalArgs(c)
+	if err != nil {
+		return nil, false, err
+	}
+
+	if opts.cloudReload {
+		// Cloud reload: the machine downloads the package directly from the cloud.
+		// We set reload_enabled + reload_time + reload_user, but NOT reload_path.
+		dirty = true
+		if foundMod != nil && getMapString(foundMod, "type") == string(rdkConfig.ModuleTypeRegistry) {
+			debugf(c.App.Writer, args.Debug, "updating module for cloud reload")
+			foundMod["reload_enabled"] = true
+			foundMod["reload_time"] = opts.reloadTime
+			foundMod["reload_user"] = opts.reloadUser
+			delete(foundMod, "reload_path")
+		} else {
+			if foundMod == nil {
+				debugf(c.App.Writer, args.Debug, "module not found, inserting for cloud reload")
+			} else {
+				debugf(c.App.Writer, args.Debug, "found local module, inserting registry module for cloud reload")
+			}
+			newMod := createNewModuleMap(manifest.ModuleID, opts)
+			modules = append(modules, newMod)
+		}
+		return modules, dirty, nil
+	}
+
+	// Reload with shell copy (reload-local, reload-binary): set reload_path on the machine.
 	var absEntrypoint string
-	var err error
-	if local {
-		// This flag means that viam server is running on the same machine running the CLI
-		// Does not indicate module type (registry vs local)
+	if opts.local {
 		absEntrypoint, err = filepath.Abs(manifest.Entrypoint)
 		if err != nil {
 			return nil, dirty, err
 		}
 	} else {
 		absEntrypoint = reloadingDestination(c, &manifest)
-	}
-
-	args, err := getGlobalArgs(c)
-	if err != nil {
-		return nil, false, err
 	}
 
 	if foundMod != nil && getMapString(foundMod, "type") == string(rdkConfig.ModuleTypeRegistry) {
@@ -287,6 +315,8 @@ func mutateModuleConfig(
 			foundMod["reload_path"] = absEntrypoint
 			foundMod["reload_enabled"] = true
 		}
+		foundMod["reload_time"] = opts.reloadTime
+		foundMod["reload_user"] = opts.reloadUser
 	} else {
 		dirty = true
 		if foundMod == nil {
@@ -294,20 +324,22 @@ func mutateModuleConfig(
 		} else {
 			debugf(c.App.Writer, args.Debug, "found local module, inserting registry module")
 		}
-		newMod := createNewModuleMap(manifest.ModuleID, absEntrypoint)
+		newMod := createNewModuleMap(manifest.ModuleID, opts)
+		newMod["reload_path"] = absEntrypoint
 		modules = append(modules, newMod)
 	}
 	return modules, dirty, nil
 }
 
-func createNewModuleMap(moduleID, entryPoint string) ModuleMap {
+func createNewModuleMap(moduleID string, opts configureModuleOpts) ModuleMap {
 	localName := localizeModuleID(moduleID)
 	newMod := ModuleMap(map[string]any{
 		"type":           string(rdkConfig.ModuleTypeRegistry),
 		"module_id":      moduleID,
 		"name":           localName,
-		"reload_path":    entryPoint,
 		"reload_enabled": true,
+		"reload_time":    opts.reloadTime,
+		"reload_user":    opts.reloadUser,
 		"version":        "latest-with-prerelease",
 	})
 	return newMod

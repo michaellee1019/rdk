@@ -103,6 +103,7 @@ const (
 	moduleBuildFlagGroupLogs   = "group-logs"
 	moduleBuildRestartOnly     = "restart-only"
 	moduleBuildFlagNoBuild     = "no-build"
+	moduleBuildFlagFile        = "file"
 	moduleBuildFlagCloudConfig = "cloud-config"
 	moduleBuildFlagID          = "build-id"
 	moduleBuildFlagOAuthLink   = "oauth-link"
@@ -3549,78 +3550,94 @@ This won't work unless you have an existing installation of our GitHub app on yo
 					},
 					Action: createCommandWithT[reloadModuleArgs](ReloadModuleLocalAction),
 				},
-				{
-					Name:      "reload",
-					Usage:     "build a module in the cloud and run it on a target machine. rebuild & restart if already running",
-					UsageText: createUsageText("module reload", nil, true, false),
-					Description: `Example invocations:
+			{
+				Name:      "reload",
+				Usage:     "build a module in the cloud and run it on a target machine. rebuild & restart if already running",
+				UsageText: createUsageText("module reload", nil, true, false),
+				Description: `Example invocations:
 
-	# A full reload command. This will build your module, send the tarball to the machine with given part ID,
-	# and configure or restart it.
+	# A full reload command. This will build your module in the cloud, and the machine will
+	# download the package directly. No file transfer through the CLI.
 	viam module reload --part-id UUID
 
 	# Run viam module reload on a mac and use the downloaded viam.json file instead of --part-id
 	viam module reload --cloud-config ~/Downloads/viam-mac-main.json
 
-	# Specify a component/service model (and optionally a name) to add to the config along with
-	# the module (the API is automatically looked up from meta.json)
-	# By default, no resources are added when a module is reloaded
-	viam module reload --model-name acme:module-name:mybase --name my-resource
-
 	# Trigger a reload build of a module located in a different directory than the current workdir
-	viam module reload --module-name part-id UUID --path /path/to/module/dir/`,
-					Flags: []cli.Flag{
-						&cli.StringFlag{
-							Name:        generalFlagPartID,
-							Usage:       "part ID of machine. get from 'Live/Offline' dropdown in the web app",
-							DefaultText: "The part ID present in the cloud credentials at /etc/viam.json",
-						},
-						&cli.StringFlag{
-							Name:  moduleFlagPath,
-							Usage: "relative path to a meta.json from workdir (default: ./). used for module ID. can be overridden with --id or --name",
-							Value: "meta.json",
-						},
-						&cli.BoolFlag{
-							Name:  moduleBuildFlagNoBuild,
-							Usage: "don't do build step, reuse existing downloaded artifact",
-						},
-						&cli.BoolFlag{
-							Name:  generalFlagNoProgress,
-							Usage: "hide progress of the file transfer",
-						},
-						&cli.StringFlag{
-							Name:  moduleFlagHomeDir,
-							Usage: "remote user's home directory. only necessary if you're targeting a remote machine where $HOME is not /root",
-							Value: "~",
-						},
-						&cli.PathFlag{
-							Name:  moduleBuildFlagCloudConfig,
-							Usage: "Provide the location of the viam.json file, used to look up the part ID using the machine ID. Alternative to --part-id.",
-							Value: "/etc/viam.json",
-						},
-						&cli.StringFlag{
-							Name:        generalFlagModelName,
-							Usage:       "If passed, creates a resource in the part config with the given model triple",
-							DefaultText: "Don't create a new resource",
-						},
-						&cli.StringFlag{
-							Name:  moduleBuildFlagWorkdir,
-							Usage: "use this to indicate that your meta.json is in a subdirectory of your repo. --module flag should be relative to this",
-							Value: ".",
-						},
-						&cli.StringFlag{
-							Name:        dataFlagResourceName,
-							Usage:       "Use with model-name to name the newly added resource",
-							DefaultText: "resource type with a unique numerical suffix",
-						},
-						&cli.StringFlag{
-							Name:        generalFlagPath,
-							Usage:       "The path to the root of the module's git repo to build",
-							DefaultText: ".",
-						},
+	viam module reload --part-id UUID --path /path/to/module/dir/`,
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:        generalFlagPartID,
+						Usage:       "part ID of machine. get from 'Live/Offline' dropdown in the web app",
+						DefaultText: "The part ID present in the cloud credentials at /etc/viam.json",
 					},
-					Action: createCommandWithT[reloadModuleArgs](ReloadModuleAction),
+					&cli.StringFlag{
+						Name:  moduleFlagPath,
+						Usage: "relative path to a meta.json from workdir (default: ./). used for module ID. can be overridden with --id or --name",
+						Value: "meta.json",
+					},
+					&cli.PathFlag{
+						Name:  moduleBuildFlagCloudConfig,
+						Usage: "Provide the location of the viam.json file, used to look up the part ID using the machine ID. Alternative to --part-id.",
+						Value: "/etc/viam.json",
+					},
+					&cli.StringFlag{
+						Name:  moduleBuildFlagWorkdir,
+						Usage: "use this to indicate that your meta.json is in a subdirectory of your repo. --module flag should be relative to this",
+						Value: ".",
+					},
+					&cli.StringFlag{
+						Name:        generalFlagPath,
+						Usage:       "The path to the root of the module's git repo to build",
+						DefaultText: ".",
+					},
 				},
+				Action: createCommandWithT[reloadModuleArgs](ReloadModuleAction),
+			},
+			{
+				Name:      "reload-binary",
+				Usage:     "copy a prebuilt binary to a target machine and configure it as a module",
+				UsageText: createUsageText("module reload-binary", nil, true, false),
+				Description: `Example invocations:
+
+	# Copy a prebuilt tarball to a machine and configure it
+	viam module reload-binary --file ./my-module.tar.gz --part-id UUID
+
+	# Use a viam.json file instead of --part-id
+	viam module reload-binary --file ./my-module.tar.gz --cloud-config ~/Downloads/viam-mac-main.json`,
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:     moduleBuildFlagFile,
+						Usage:    "path to the prebuilt binary or tarball to copy to the machine",
+						Required: true,
+					},
+					&cli.StringFlag{
+						Name:        generalFlagPartID,
+						Usage:       "part ID of machine. get from 'Live/Offline' dropdown in the web app",
+						DefaultText: "The part ID present in the cloud credentials at /etc/viam.json",
+					},
+					&cli.StringFlag{
+						Name:  moduleFlagPath,
+						Usage: "relative path to a meta.json. used for module ID",
+						Value: "meta.json",
+					},
+					&cli.PathFlag{
+						Name:  moduleBuildFlagCloudConfig,
+						Usage: "Provide the location of the viam.json file, used to look up the part ID using the machine ID. Alternative to --part-id.",
+						Value: "/etc/viam.json",
+					},
+					&cli.StringFlag{
+						Name:  moduleFlagHomeDir,
+						Usage: "remote user's home directory. only necessary if you're targeting a remote machine where $HOME is not /root",
+						Value: "~",
+					},
+					&cli.BoolFlag{
+						Name:  generalFlagNoProgress,
+						Usage: "hide progress of the file transfer",
+					},
+				},
+				Action: createCommandWithT[reloadModuleArgs](ReloadModuleBinaryAction),
+			},
 				{
 					Name:      "download",
 					Usage:     "download a module package from the registry",
