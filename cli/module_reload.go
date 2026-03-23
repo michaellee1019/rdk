@@ -322,7 +322,7 @@ func configureModule(
 	// to get the most up-to-date version, and return it for further use.
 	partResponse, err := vc.getRobotPart(part.Id)
 	if err != nil {
-		return part, needsRestart, err
+		return part, false, err
 	}
 	return partResponse.Part, needsRestart, nil
 }
